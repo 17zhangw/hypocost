@@ -11,10 +11,16 @@ void hypocost_explain(Query *query, int cursorOptions, IntoClause *into, Explain
 void hypocost_scribble(PlannerInfo* root, Path* path);
 SubPlan* hypocost_pick_altsubplan(PlannerInfo* root, List* subplans);
 PlannedStmt* hypocost_planner(Query *parse, const char* query_string, int cursorOptions, ParamListInfo boundParams);
-extern ExplainOneQuery_hook_type prev_explain_hook;
+
+void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer);
+List* hypocost_check_replace(PlannerInfo* root, Path* path);
+void hypocost_substitute_bpath(PlannerInfo* root, Path* path, List* oids);
 
 extern bool hypocost_enable;
+extern bool hypocost_inject_analyze;
+extern bool hypocost_substitute;
 extern bool hypocost_in_explain;
+extern bool hypocost_in_explain_analyze;
 extern bool hypocost_do_scribble;
 
 extern double hypocost_seq_page_cost;

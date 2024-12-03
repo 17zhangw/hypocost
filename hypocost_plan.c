@@ -13,6 +13,7 @@
 #include "optimizer/paths.h"
 #include "partitioning/partdesc.h"
 #include "nodes/nodeFuncs.h"
+#include "utils/lsyscache.h"
 
 
 bool hypocost_do_scribble = false;
@@ -132,7 +133,7 @@ erase_restrictinfo_cost(Node *node, void* ctx)
 
 
 static void
-recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
+recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s, Path* outer)
 {
 		const char* plantype = NULL;
 		/* Guard against stack overflow due to overly complex plans */
@@ -141,14 +142,30 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 		switch (path->pathtype)
 		{
 				case T_SeqScan:
+				{
+						if (path->parent->baserestrictinfo)
+						{
+							ListCell* l;
+							foreach(l, path->parent->baserestrictinfo)
+							{
+								erase_restrictinfo_cost(lfirst(l), NULL);
+							}
+						}
+						set_baserel_size_estimates(root, path->parent);
 						cost_seqscan(path, root, path->parent, path->param_info);
 						break;
+				}
 				case T_SampleScan:
 						cost_samplescan(path, root, path->parent, path->param_info);
 						break;
 				case T_IndexScan:
 				case T_IndexOnlyScan: {
 						IndexPath* ipath = (IndexPath*)path;
+						if (hypocost_in_explain_analyze || hypocost_substitute)
+						{
+							hypocost_check_substitute(root, ipath, outer);
+						}
+
 						if (ipath->indexinfo)
 						{
 								ListCell* l;
@@ -174,7 +191,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						foreach(lc, bpath->bitmapquals)
 						{
 								Path *bitmapqual = (Path *) lfirst(lc);
-								recompute_pathcosts(root, bitmapqual, s);
+								recompute_pathcosts(root, bitmapqual, s, path);
 						}
 						cost_bitmap_or_node(bpath, root);
 						break;
@@ -187,13 +204,22 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						foreach(lc, bpath->bitmapquals)
 						{
 								Path *bitmapqual = (Path *) lfirst(lc);
-								recompute_pathcosts(root, bitmapqual, s);
+								recompute_pathcosts(root, bitmapqual, s, path);
 						}
 						cost_bitmap_and_node(bpath, root);
 						break;
 				}
 				case T_BitmapHeapScan:
-						recompute_pathcosts(root, ((BitmapHeapPath*)path)->bitmapqual, s);
+						if (hypocost_in_explain_analyze || hypocost_substitute)
+						{
+							List* oids = hypocost_check_replace(root, path);
+							if (oids != NIL)
+							{
+								hypocost_substitute_bpath(root, path, oids);
+							}
+						}
+
+						recompute_pathcosts(root, ((BitmapHeapPath*)path)->bitmapqual, s, path);
 						cost_bitmap_heap_scan(
 								path,
 								root,
@@ -218,8 +244,8 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						break;
 				case T_HashJoin: {
 						JoinCostWorkspace workspace;
-						recompute_pathcosts(root, ((HashPath*)path)->jpath.outerjoinpath, s);
-						recompute_pathcosts(root, ((HashPath*)path)->jpath.innerjoinpath, s);
+						recompute_pathcosts(root, ((HashPath*)path)->jpath.outerjoinpath, s, NULL);
+						recompute_pathcosts(root, ((HashPath*)path)->jpath.innerjoinpath, s, NULL);
 						initial_cost_hashjoin(
 								root,
 								&workspace,
@@ -242,8 +268,8 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						JoinCostWorkspace workspace;
 						// Save+Restore this because this is a costing decision made in costing...
 						bool materialize_inner = ((MergePath*)path)->materialize_inner;
-						recompute_pathcosts(root, ((MergePath*)path)->jpath.outerjoinpath, s);
-						recompute_pathcosts(root, ((MergePath*)path)->jpath.innerjoinpath, s);
+						recompute_pathcosts(root, ((MergePath*)path)->jpath.outerjoinpath, s, NULL);
+						recompute_pathcosts(root, ((MergePath*)path)->jpath.innerjoinpath, s, NULL);
 						initial_cost_mergejoin(
 								root,
 								&workspace,
@@ -267,8 +293,8 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 				}
 				case T_NestLoop: {
 						JoinCostWorkspace workspace;
-						recompute_pathcosts(root, ((NestPath*)path)->jpath.outerjoinpath, s);
-						recompute_pathcosts(root, ((NestPath*)path)->jpath.innerjoinpath, s);
+						recompute_pathcosts(root, ((NestPath*)path)->jpath.outerjoinpath, s, NULL);
+						recompute_pathcosts(root, ((NestPath*)path)->jpath.innerjoinpath, s, NULL);
 						initial_cost_nestloop(
 								root,
 								&workspace, 
@@ -290,7 +316,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						foreach(l, ((AppendPath*)path)->subpaths)
 						{
 								Path *subpath = (Path *) lfirst(l);
-								recompute_pathcosts(root, subpath, s);
+								recompute_pathcosts(root, subpath, s, NULL);
 						}
 
 						if (list_length(((AppendPath*)path)->subpaths) == 1)
@@ -309,7 +335,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						{
 								ProjectionPath* ppath = (ProjectionPath*)path;
 								Assert(IsA(path, ProjectionPath));
-								recompute_pathcosts(root, ppath->subpath, s);
+								recompute_pathcosts(root, ppath->subpath, s, NULL);
 								if (is_projection_capable_path(ppath->subpath) || equal(ppath->subpath->pathtarget->exprs, path->pathtarget->exprs))
 								{
 										path->rows = ppath->subpath->rows;
@@ -357,7 +383,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						if (IsA(path, UpperUniquePath))
 						{
 								UpperUniquePath *upath = (UpperUniquePath*)path;
-								recompute_pathcosts(root, upath->subpath, s);
+								recompute_pathcosts(root, upath->subpath, s, NULL);
 								path->startup_cost = upath->subpath->startup_cost;
 								path->total_cost = upath->subpath->total_cost + cpu_operator_cost * upath->subpath->rows * upath->numkeys;
 						}
@@ -366,7 +392,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 								UniquePath *uq = NULL;
 								Path *cuq = NULL;
 								Assert(IsA(path, UniquePath));
-								recompute_pathcosts(root, ((UniquePath*)path)->subpath, s);
+								recompute_pathcosts(root, ((UniquePath*)path)->subpath, s, NULL);
 
 								cuq = path->parent->cheapest_unique_path;
 								path->parent->cheapest_unique_path = NULL;
@@ -387,7 +413,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						double *rows = NULL;
 						Cost		input_startup_cost = 0;
 						Cost		input_total_cost = 0;
-						recompute_pathcosts(root, ((GatherMergePath*)path)->subpath, s);
+						recompute_pathcosts(root, ((GatherMergePath*)path)->subpath, s, NULL);
 						if (pathkeys_contained_in(((GatherMergePath*)path)->path.pathkeys, ((GatherMergePath*)path)->subpath->pathkeys))
 						{
 								/* Subpath is adequately ordered, we won't need to sort it */
@@ -431,7 +457,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 				}
 				case T_Gather: {
 						double *rows = NULL;
-						recompute_pathcosts(root, ((GatherPath*)path)->subpath, s);
+						recompute_pathcosts(root, ((GatherPath*)path)->subpath, s, NULL);
 						if (((GatherPath*)path)->override_rows_valid)
 						{
 								rows = &((GatherPath*)path)->override_rows;
@@ -448,13 +474,13 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 				}
 				case T_Memoize:
 						MemoizePath* mpath = (MemoizePath*)path;
-						recompute_pathcosts(root, ((MemoizePath*)path)->subpath, s);
+						recompute_pathcosts(root, ((MemoizePath*)path)->subpath, s, NULL);
 						mpath->path.startup_cost = mpath->subpath->startup_cost + cpu_tuple_cost;
 						mpath->path.total_cost = mpath->subpath->total_cost + cpu_tuple_cost;
 						mpath->path.rows = mpath->subpath->rows;
 						break;
 				case T_Material:
-						recompute_pathcosts(root, ((MaterialPath*)path)->subpath, s);
+						recompute_pathcosts(root, ((MaterialPath*)path)->subpath, s, NULL);
 						cost_material(
 								path,
 								((MaterialPath*)path)->subpath->startup_cost,
@@ -464,7 +490,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						);
 						break;
 				case T_Sort:
-						recompute_pathcosts(root, ((SortPath*)path)->subpath, s);
+						recompute_pathcosts(root, ((SortPath*)path)->subpath, s, NULL);
 						cost_sort(
 								path,
 								root,
@@ -478,7 +504,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						);
 						break;
 				case T_IncrementalSort:
-						recompute_pathcosts(root, ((IncrementalSortPath*)path)->spath.subpath, s);
+						recompute_pathcosts(root, ((IncrementalSortPath*)path)->spath.subpath, s, NULL);
 						cost_incremental_sort(
 								path,
 								root,
@@ -495,7 +521,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						break;
 				case T_Group:
 						Assert(IsA(path, GroupPath));
-						recompute_pathcosts(root, ((GroupPath*)path)->subpath, s);
+						recompute_pathcosts(root, ((GroupPath*)path)->subpath, s, NULL);
 						cost_group(
 								path,
 								root,
@@ -514,7 +540,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						{
 								GroupingSetsPath *gp = (GroupingSetsPath*)path;
 								AggClauseCosts *costs = NULL;
-								recompute_pathcosts(root, ((GroupingSetsPath*)path)->subpath, s);
+								recompute_pathcosts(root, ((GroupingSetsPath*)path)->subpath, s, NULL);
 								if (((GroupingSetsPath*)gp)->aggcosts_valid)
 										costs = &((GroupingSetsPath*)gp)->aggcosts;
 
@@ -536,7 +562,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						{
 								AggClauseCosts *costs = NULL;
 								Assert(IsA(path, AggPath));
-								recompute_pathcosts(root, ((AggPath*)path)->subpath, s);
+								recompute_pathcosts(root, ((AggPath*)path)->subpath, s, NULL);
 								if (((AggPath*)path)->aggcosts_valid)
 										costs = &((AggPath*)path)->aggcosts;
 
@@ -559,7 +585,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 						break;
 				case T_Limit: {
 						LimitPath *lpath = (LimitPath*)path;
-						recompute_pathcosts(root, ((LimitPath*)path)->subpath, s);
+						recompute_pathcosts(root, ((LimitPath*)path)->subpath, s, NULL);
 						lpath->path.rows = lpath->subpath->rows;
 						lpath->path.startup_cost = lpath->subpath->startup_cost;
 						lpath->path.total_cost= lpath->subpath->total_cost;
@@ -575,7 +601,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s)
 				}
 				case T_SetOp: {
 						SetOpPath *spath = (SetOpPath*)path;
-						recompute_pathcosts(root, spath->subpath, s);
+						recompute_pathcosts(root, spath->subpath, s, NULL);
 						spath->path.startup_cost = spath->subpath->startup_cost;
 						spath->path.total_cost = spath->subpath->total_cost + cpu_operator_cost * spath->subpath->rows * list_length(spath->distinctList);
 						break;
@@ -686,7 +712,7 @@ process_subplan(PlannerGlobal* glob, SubPlan* sp)
 		s = save_state();
 		PG_TRY();
 		{
-				recompute_pathcosts(subroot, best_path, &s);
+				recompute_pathcosts(subroot, best_path, &s, NULL);
 				plan = create_plan(subroot, best_path);
 		}
 		PG_FINALLY();
@@ -705,6 +731,8 @@ process_cte(PlannerGlobal* glob, SubPlan* sp)
 		RelOptInfo *final_rel;
 		Path	   *best_path;
 		Plan* plan;
+		List* nodes;
+		ListCell* lc;
 
 		/*
 		 * From the postgres source code in subselect.c:
@@ -714,13 +742,36 @@ process_cte(PlannerGlobal* glob, SubPlan* sp)
 		Assert(sp->subLinkType == CTE_SUBLINK);
 
 		subroot = list_nth(glob->subroots, sp->plan_id - 1);
+		nodes = list_concat_copy(subroot->init_plans, subroot->noninit_plans);
+		foreach (lc, nodes)
+		{
+				Plan* p = (Plan*)lfirst(lc);
+				if (p != NULL && IsA(p, SubPlan))
+				{
+						Plan* plan;
+						PlannerInfo* ssubroot = list_nth(glob->subroots, ((SubPlan*)p)->plan_id - 1);
+						Assert(((SubPlan*)p)->subLinkType != CTE_SUBLINK);
+						plan = process_subplan(glob, (SubPlan*)p);
+						list_nth_cell(glob->subplans, ((SubPlan*)p)->plan_id-1)->ptr_value = plan;
+						cost_subplan(ssubroot, (SubPlan*)p, plan);
+				}
+		}
+
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = final_rel->cheapest_total_path;
 
 		s = save_state();
 		PG_TRY();
 		{
-				recompute_pathcosts(subroot, best_path, &s);
+				recompute_pathcosts(subroot, best_path, &s, NULL);
+				foreach (lc, subroot->init_plans)
+				{
+						SubPlan* isp = (SubPlan*)lfirst(lc);
+						Assert(IsA(lfirst(lc), SubPlan));
+						best_path->startup_cost += isp->startup_cost + isp->per_call_cost;
+						best_path->total_cost += isp->startup_cost + isp->per_call_cost;
+				}
+
 				plan = create_plan(subroot, best_path);
 		}
 		PG_FINALLY();
@@ -761,7 +812,7 @@ void hypocost_scribble(PlannerInfo* root, Path* path)
 		PG_TRY();
 		{
 				// Recompute the main.
-				recompute_pathcosts(root, path, &s);
+				recompute_pathcosts(root, path, &s, NULL);
 
 				// We need to do something similar to charge for init plans...
 				// See: SS_charge_for_initplans.
@@ -826,8 +877,7 @@ PlannedStmt* hypocost_planner(Query *parse, const char* query_string, int cursor
 						valid_subplan_ids_len = 0;
 						MemoryContextSwitchTo(old);
 				}
-
-				return result;
 		}
 		PG_END_TRY();
+		return result;
 }
