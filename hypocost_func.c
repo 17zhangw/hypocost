@@ -205,6 +205,10 @@ hypocost_check_replace(PlannerInfo* root, Path* path)
 			}
 		}
 
+		if (ipath->indexinfo->unique)
+		{
+			return list_make1_oid(ipath->indexinfo->indexoid);
+		}
 	}
 
 	return NIL;
