@@ -147,7 +147,7 @@ hypocost_fake_opt(PlannerInfo* root, Path *path, Oid filter_oid, List* filter_oi
 }
 
 List*
-hypocost_check_replace(PlannerInfo* root, Path* path)
+hypocost_check_replace(PlannerInfo* root, Path* path, bool inc_pk)
 {
 	if (IsA(path, BitmapOrPath))
 	{
@@ -157,7 +157,7 @@ hypocost_check_replace(PlannerInfo* root, Path* path)
 		foreach(lc, bpath->bitmapquals)
 		{
 			Path *bitmapqual = (Path *) lfirst(lc);
-			List* oids = hypocost_check_replace(root, bitmapqual);
+			List* oids = hypocost_check_replace(root, bitmapqual, inc_pk);
 			if (oids != NIL)
 				rets = list_concat(rets, oids);
 		}
@@ -171,7 +171,7 @@ hypocost_check_replace(PlannerInfo* root, Path* path)
 		foreach(lc, bpath->bitmapquals)
 		{
 			Path *bitmapqual = (Path *) lfirst(lc);
-			List* oids = hypocost_check_replace(root, bitmapqual);
+			List* oids = hypocost_check_replace(root, bitmapqual, inc_pk);
 			if (oids != NIL)
 				rets = list_concat(rets, oids);
 		}
@@ -179,7 +179,7 @@ hypocost_check_replace(PlannerInfo* root, Path* path)
 	}
 	else if (IsA(path, BitmapHeapPath))
 	{
-		return hypocost_check_replace(root, ((BitmapHeapPath*)path)->bitmapqual);
+		return hypocost_check_replace(root, ((BitmapHeapPath*)path)->bitmapqual, inc_pk);
 	}
 	else if (IsA(path, IndexPath))
 	{
@@ -205,7 +205,7 @@ hypocost_check_replace(PlannerInfo* root, Path* path)
 			}
 		}
 
-		if (ipath->indexinfo->unique)
+		if (ipath->indexinfo->unique && inc_pk)
 		{
 			return list_make1_oid(ipath->indexinfo->indexoid);
 		}

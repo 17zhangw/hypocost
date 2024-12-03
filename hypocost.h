@@ -13,7 +13,7 @@ SubPlan* hypocost_pick_altsubplan(PlannerInfo* root, List* subplans);
 PlannedStmt* hypocost_planner(Query *parse, const char* query_string, int cursorOptions, ParamListInfo boundParams);
 
 void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer);
-List* hypocost_check_replace(PlannerInfo* root, Path* path);
+List* hypocost_check_replace(PlannerInfo* root, Path* path, bool inc_pk);
 void hypocost_substitute_bpath(PlannerInfo* root, Path* path, List* oids);
 
 extern bool hypocost_enable;

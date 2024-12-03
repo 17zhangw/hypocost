@@ -212,9 +212,12 @@ recompute_pathcosts(PlannerInfo* root, Path* path, struct GUCState* s, Path* out
 				case T_BitmapHeapScan:
 						if (hypocost_in_explain_analyze || hypocost_substitute)
 						{
-							List* oids = hypocost_check_replace(root, path);
+							List* oids = hypocost_check_replace(root, path, false);
 							if (oids != NIL)
 							{
+								list_free(oids);
+								// Now get all OIDs under.
+								oids = hypocost_check_replace(root, path, true);
 								hypocost_substitute_bpath(root, path, oids);
 							}
 						}
