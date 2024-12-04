@@ -311,6 +311,7 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 				if (rel)
 				{
 					ListCell* l;
+					IndexPath* tpath = NULL;
 					foreach(l, rel->pathlist)
 					{
 						struct Path* nipath = lfirst(l);
@@ -322,28 +323,59 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 							// Preserve the parameterization if possible...
 							if (iinfo->indexoid == entry->index_oid && ((bool)pinfo) == ((bool)nppath))
 							{
-								if ((pinfo == NULL && nppath == NULL) || (bms_compare(pinfo->ppi_req_outer, nppath->ppi_req_outer) == 0))
+								if ((pinfo == NULL && nppath == NULL) || (pinfo && nppath && bms_compare(pinfo->ppi_req_outer, nppath->ppi_req_outer) == 0))
 								{
-									// Hackery to preserve parallel + costs
-									inipath->path.parallel_aware = ipath->path.parallel_aware;
-									inipath->path.parallel_safe = ipath->path.parallel_safe;
-									inipath->path.parallel_workers = ipath->path.parallel_workers;
-									inipath->loop_count = ipath->loop_count;
-									inipath->partial_path = ipath->partial_path;
-									inipath->indexselectivity = ipath->indexselectivity;
-									inipath->indextotalcost = ipath->indextotalcost;
-									inipath->path.rows = ipath->path.rows;
-									inipath->path.startup_cost = ipath->path.startup_cost;
-									inipath->path.total_cost = ipath->path.total_cost;
-									inipath->path.param_info = ipath->path.param_info;
-									// Attempt an override.. Just do a memcpy()  and try to fix up the RelOptInfo...
-									memcpy(ipath, inipath, sizeof(IndexPath));
-									ipath->path.parent = ipparent;
-									overwritten = true;
+									// Find an exact param match first.
+									tpath = inipath;
 									break;
 								}
 							}
 						}
+					}
+
+					if (!tpath)
+					{
+						foreach(l, rel->pathlist)
+						{
+							struct Path* nipath = lfirst(l);
+							if (nipath != NULL && IsA(nipath, IndexPath))
+							{
+								IndexPath* inipath = (IndexPath*)nipath;
+								ParamPathInfo* nppath = inipath->path.param_info;
+								IndexOptInfo* iinfo = inipath->indexinfo;
+								// Preserve the parameterization if possible...
+								if (iinfo->indexoid == entry->index_oid && ((bool)pinfo) == ((bool)nppath))
+								{
+									// Allow for new path to be param-subset of the old one (i.e., relaxation).
+									if ((pinfo == NULL && nppath == NULL) || (pinfo && nppath && bms_is_subset(nppath->ppi_req_outer, pinfo->ppi_req_outer)))
+									{
+										tpath = inipath;
+										break;
+									}
+								}
+							}
+						}
+					}
+
+					if (tpath != NULL)
+					{
+						// Hackery to preserve parallel + costs
+						tpath->path.parallel_aware = ipath->path.parallel_aware;
+						tpath->path.parallel_safe = ipath->path.parallel_safe;
+						tpath->path.parallel_workers = ipath->path.parallel_workers;
+						tpath->loop_count = ipath->loop_count;
+						tpath->partial_path = ipath->partial_path;
+						tpath->indexselectivity = ipath->indexselectivity;
+						tpath->indextotalcost = ipath->indextotalcost;
+						tpath->path.rows = ipath->path.rows;
+						tpath->path.startup_cost = ipath->path.startup_cost;
+						tpath->path.total_cost = ipath->path.total_cost;
+						tpath->path.param_info = ipath->path.param_info;
+						// Attempt an override.. Just do a memcpy()  and try to fix up the RelOptInfo...
+						memcpy(ipath, tpath, sizeof(IndexPath));
+						ipath->path.parent = ipparent;
+						overwritten = true;
+						break;
 					}
 
 					if (overwritten)
