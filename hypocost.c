@@ -11,6 +11,7 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 
 bool hypocost_enable = false;
+bool hypocost_alter_explain = false;
 bool hypocost_substitute = false;
 bool hypocost_inject_analyze = false;
 double hypocost_seq_page_cost = 1.0;
@@ -30,6 +31,7 @@ hypocost_utility_hook(
 	QueryCompletion *qc)
 {
         Node* parsetree = ((PlannedStmt *) pstmt)->utilityStmt;
+	hypocost_in_explain_analyze = false;
         if (parsetree != NULL && hypocost_inject_analyze)
 	{
 		switch (nodeTag(parsetree))
@@ -44,6 +46,7 @@ hypocost_utility_hook(
 
 					if (strcmp(opt->defname, "analyze") == 0)
 					{
+						// Dark hack to get hypopg to still plan with hypothetical indexes...
 						((ExplainStmt*)parsetree)->options = foreach_delete_current(((ExplainStmt*)parsetree)->options, lc);
 						hypocost_in_explain_analyze = true;
 					}
@@ -91,6 +94,7 @@ hypocost_utility_hook(
 
 void _PG_init(void) {
         DefineCustomBoolVariable("hypocost.enable", "Enable Hypocost.", NULL, &hypocost_enable, false, PGC_SUSET, 0, NULL, NULL, NULL);
+        DefineCustomBoolVariable("hypocost.alter_explain", "Alter the explain.", NULL, &hypocost_alter_explain, false, PGC_SUSET, 0, NULL, NULL, NULL);
         DefineCustomBoolVariable("hypocost.inject_analyze", "Attempt to inject into analyze.", NULL, &hypocost_inject_analyze, false, PGC_SUSET, 0, NULL, NULL, NULL);
         DefineCustomBoolVariable("hypocost.substitute", "Attempt to substitute.", NULL, &hypocost_substitute, false, PGC_SUSET, 0, NULL, NULL, NULL);
         DefineCustomRealVariable(

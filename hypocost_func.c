@@ -10,8 +10,11 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/cost.h"
 #include "nodes/bitmapset.h"
+#include "parser/parsetree.h"
+#include "nodes/nodeFuncs.h"
 
 #include "hypocost.h"
+#include "nodes/print.h"
 
 
 /* Define a struct for the entries */
@@ -75,11 +78,14 @@ hypocost_fake_opt(PlannerInfo* root, Path *path, Oid filter_oid, List* filter_oi
 {
 	RelOptInfo* rel = NULL;
 	bool old_enable_bitmapscan = enable_bitmapscan;
+	bool old_enable_indexscan = enable_indexscan;
+	bool old_enable_seqscan = enable_seqscan;
 	RelOptInfo* roi = root->simple_rel_array[path->parent->relid];
 	get_relation_info_hook_type prev_get_relation_info_hook = NULL;
 
 	PG_TRY();
 	{
+		int i = -1;
 		prev_get_relation_info_hook = get_relation_info_hook;
 		get_relation_info_hook = NULL;
 		root->simple_rel_array[path->parent->relid] = NULL;
@@ -89,10 +95,24 @@ hypocost_fake_opt(PlannerInfo* root, Path *path, Oid filter_oid, List* filter_oi
 		rel = build_simple_rel(root, path->parent->relid, NULL);
 		rel->baserestrictinfo = roi->baserestrictinfo;
 		rel->has_eclass_joins = roi->has_eclass_joins;
-		rel->relids = roi->relids;
-		rel->joininfo = roi->joininfo;
 		rel->eclass_indexes = roi->eclass_indexes;
+		rel->relids = roi->relids;
+
+		// Add ...
+		// Think this happens when a Parallel Append plan is involved...unfortunate...
+		while ((i = bms_next_member(rel->eclass_indexes, i)) >= 0)
+		{
+			EquivalenceClass *cur_ec = (EquivalenceClass *) list_nth(root->eq_classes, i);
+			int j = -1;
+			while ((j = bms_next_member(rel->relids, j)) >= 0)
+			{
+				cur_ec->ec_relids = bms_add_member(cur_ec->ec_relids, j);
+			}
+		}
+
+		rel->joininfo = roi->joininfo;
 		rel->reltarget = roi->reltarget;
+		rel->top_parent_relids = roi->top_parent_relids;
 
 		{
 			ListCell* l;
@@ -130,8 +150,12 @@ hypocost_fake_opt(PlannerInfo* root, Path *path, Oid filter_oid, List* filter_oi
 			check_index_predicates(root, rel);
 			// Assume we have some [sane] cost...
 			enable_bitmapscan = allowbitmap;
+			enable_indexscan = !allowbitmap;
+			enable_seqscan = false;
 			create_index_paths(root, rel);
 			enable_bitmapscan = old_enable_bitmapscan;
+			enable_indexscan = old_enable_indexscan;
+			enable_seqscan = old_enable_seqscan;
 		}
 		root->simple_rel_array[path->parent->relid] = roi;
 	}
@@ -205,7 +229,7 @@ hypocost_check_replace(PlannerInfo* root, Path* path, bool inc_pk)
 			}
 		}
 
-		if (ipath->indexinfo->unique && inc_pk)
+		if (inc_pk)
 		{
 			return list_make1_oid(ipath->indexinfo->indexoid);
 		}
@@ -320,10 +344,12 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 							IndexPath* inipath = (IndexPath*)nipath;
 							ParamPathInfo* nppath = inipath->path.param_info;
 							IndexOptInfo* iinfo = inipath->indexinfo;
+
 							// Preserve the parameterization if possible...
 							if (iinfo->indexoid == entry->index_oid && ((bool)pinfo) == ((bool)nppath))
 							{
-								if ((pinfo == NULL && nppath == NULL) || (pinfo && nppath && bms_compare(pinfo->ppi_req_outer, nppath->ppi_req_outer) == 0))
+								if ((pinfo == NULL && nppath == NULL) ||
+								    (pinfo && nppath && bms_compare(pinfo->ppi_req_outer, nppath->ppi_req_outer) == 0))
 								{
 									// Find an exact param match first.
 									tpath = inipath;
@@ -347,11 +373,31 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 								if (iinfo->indexoid == entry->index_oid && ((bool)pinfo) == ((bool)nppath))
 								{
 									// Allow for new path to be param-subset of the old one (i.e., relaxation).
-									if ((pinfo == NULL && nppath == NULL) || (pinfo && nppath && bms_is_subset(nppath->ppi_req_outer, pinfo->ppi_req_outer)))
+									if (pinfo && nppath && bms_is_subset(nppath->ppi_req_outer, pinfo->ppi_req_outer))
 									{
 										tpath = inipath;
 										break;
 									}
+								}
+							}
+						}
+					}
+
+					if (!tpath)
+					{
+						foreach(l, rel->pathlist)
+						{
+							struct Path* nipath = lfirst(l);
+							if (nipath != NULL && IsA(nipath, IndexPath))
+							{
+								IndexPath* inipath = (IndexPath*)nipath;
+								ParamPathInfo* nppath = inipath->path.param_info;
+								IndexOptInfo* iinfo = inipath->indexinfo;
+								// Of last resort, just try the index itself without outer rel
+								if (iinfo->indexoid == entry->index_oid && !nppath)
+								{
+									tpath = inipath;
+									break;
 								}
 							}
 						}

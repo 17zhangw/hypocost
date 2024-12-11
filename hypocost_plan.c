@@ -371,17 +371,11 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 						}
 						else if (IsA(path, MinMaxAggPath))
 						{
-								ereport(ERROR,
-										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-										 errmsg("Unsupported recosting MinMaxAggPath")));
-								break;
+							break;
 						}
 						else if (IsA(path, GroupResultPath))
 						{
-								ereport(ERROR,
-										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-										 errmsg("Unsupported recosting GroupResultPath")));
-								break;
+							break;
 						}
 						else
 						{
@@ -622,6 +616,10 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 						spath->path.total_cost = spath->subpath->total_cost + cpu_operator_cost * spath->subpath->rows * list_length(spath->distinctList);
 						break;
 				}
+				case T_FunctionScan: {
+						cost_functionscan(path, root, path->parent, path->param_info);
+						break;
+				}
 				case T_TidScan:
 						plantype = plantype ? plantype : "TidScan";
 						[[fallthrough]];
@@ -639,9 +637,6 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 						[[fallthrough]];
 				case T_CustomScan:
 						plantype = plantype ? plantype : "CustomScan";
-						[[fallthrough]];
-				case T_FunctionScan:
-						plantype = plantype ? plantype : "FunctionScan";
 						[[fallthrough]];
 				case T_TableFuncScan:
 						plantype = plantype ? plantype : "TableFuncScan";
@@ -680,7 +675,7 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 SubPlan* hypocost_pick_altsubplan(PlannerInfo* root, List* subpaths)
 {
 		ListCell *lp;
-		if (!hypocost_in_explain || !hypocost_do_scribble)
+		if (!hypocost_do_scribble)
 				// Don't intervene.
 				return NULL;
 
@@ -724,16 +719,8 @@ process_subplan(PlannerGlobal* glob, SubPlan* sp)
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
-		PG_TRY();
-		{
-				recompute_pathcosts(subroot, best_path, NULL);
-				plan = create_plan(subroot, best_path);
-		}
-		PG_FINALLY();
-		{
-
-		}
-		PG_END_TRY();
+		recompute_pathcosts(subroot, best_path, NULL);
+		plan = create_plan(subroot, best_path);
 		return plan;
 }
 
@@ -773,24 +760,16 @@ process_cte(PlannerGlobal* glob, SubPlan* sp)
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = final_rel->cheapest_total_path;
 
-		PG_TRY();
+		recompute_pathcosts(subroot, best_path, NULL);
+		foreach (lc, subroot->init_plans)
 		{
-				recompute_pathcosts(subroot, best_path, NULL);
-				foreach (lc, subroot->init_plans)
-				{
-						SubPlan* isp = (SubPlan*)lfirst(lc);
-						Assert(IsA(lfirst(lc), SubPlan));
-						best_path->startup_cost += isp->startup_cost + isp->per_call_cost;
-						best_path->total_cost += isp->startup_cost + isp->per_call_cost;
-				}
-
-				plan = create_plan(subroot, best_path);
+			SubPlan* isp = (SubPlan*)lfirst(lc);
+			Assert(IsA(lfirst(lc), SubPlan));
+			best_path->startup_cost += isp->startup_cost + isp->per_call_cost;
+			best_path->total_cost += isp->startup_cost + isp->per_call_cost;
 		}
-		PG_FINALLY();
-		{
 
-		}
-		PG_END_TRY();
+		plan = create_plan(subroot, best_path);
 		return plan;
 }
 
@@ -799,48 +778,41 @@ void hypocost_scribble(PlannerInfo* root, Path* path)
 {
 		List* nodes;
 		ListCell *lc;
-		if (!hypocost_in_explain || !hypocost_do_scribble)
+		if (!hypocost_do_scribble)
 				return;
+
+		// Wire for re-costing.
+		wire_state();
 
 		nodes = list_concat_copy(root->init_plans, root->noninit_plans);
 		foreach (lc, nodes)
 		{
-				Plan* p = (Plan*)lfirst(lc);
-				if (p != NULL && IsA(p, SubPlan))
-				{
-						Plan* plan;
-						PlannerInfo* subroot = list_nth(root->glob->subroots, ((SubPlan*)p)->plan_id - 1);
-						if (((SubPlan*)p)->subLinkType == CTE_SUBLINK)
-								plan = process_cte(root->glob, (SubPlan*)p);
-						else
-								plan = process_subplan(root->glob, (SubPlan*)p);
-						list_nth_cell(root->glob->subplans, ((SubPlan*)p)->plan_id-1)->ptr_value = plan;
-						cost_subplan(subroot, (SubPlan*)p, plan);
-				}
+			Plan* p = (Plan*)lfirst(lc);
+			if (p != NULL && IsA(p, SubPlan))
+			{
+				Plan* plan;
+				PlannerInfo* subroot = list_nth(root->glob->subroots, ((SubPlan*)p)->plan_id - 1);
+				if (((SubPlan*)p)->subLinkType == CTE_SUBLINK)
+					plan = process_cte(root->glob, (SubPlan*)p);
+				else
+					plan = process_subplan(root->glob, (SubPlan*)p);
+				list_nth_cell(root->glob->subplans, ((SubPlan*)p)->plan_id-1)->ptr_value = plan;
+				cost_subplan(subroot, (SubPlan*)p, plan);
+			}
 		}
 
-		// Wire for re-costing.
-		wire_state();
-		PG_TRY();
+		// Recompute the main.
+		recompute_pathcosts(root, path, NULL);
+
+		// We need to do something similar to charge for init plans...
+		// See: SS_charge_for_initplans.
+		foreach (lc, root->init_plans)
 		{
-				// Recompute the main.
-				recompute_pathcosts(root, path, NULL);
-
-				// We need to do something similar to charge for init plans...
-				// See: SS_charge_for_initplans.
-				foreach (lc, root->init_plans)
-				{
-						SubPlan* isp = (SubPlan*)lfirst(lc);
-						Assert(IsA(lfirst(lc), SubPlan));
-						path->startup_cost += isp->startup_cost + isp->per_call_cost;
-						path->total_cost += isp->startup_cost + isp->per_call_cost;
-				}
+			SubPlan* isp = (SubPlan*)lfirst(lc);
+			Assert(IsA(lfirst(lc), SubPlan));
+			path->startup_cost += isp->startup_cost + isp->per_call_cost;
+			path->total_cost += isp->startup_cost + isp->per_call_cost;
 		}
-		PG_FINALLY();
-		{
-
-		}
-		PG_END_TRY();
 }
 
 
@@ -849,7 +821,7 @@ PlannedStmt* hypocost_planner(Query *parse, const char* query_string, int cursor
 		PlannedStmt* result = NULL;
 		Query* cparse = NULL;
 		ListCell* lc = NULL;
-		if (!hypocost_in_explain)
+		if (!hypocost_enable)
 		{
 				return standard_planner(parse, query_string, cursorOptions, boundParams);
 		}
@@ -876,6 +848,24 @@ PlannedStmt* hypocost_planner(Query *parse, const char* query_string, int cursor
 				}
 		}
 
+		if (es_ctx != NULL)
+		{
+			// Insert an EXPLAIN here...
+			// Have to dump it here because the relcache related metadata can get blown away.
+			Assert(!es_ctx->es->analyze);
+			ExplainOnePlan(
+				result,
+				es_ctx->into,
+				es_ctx->es,
+				query_string,
+				boundParams,
+				es_ctx->queryEnv,
+				NULL,
+				NULL
+			);
+		}
+
+		// Time to scribble...
 		hypocost_do_scribble = true;
 		PG_TRY();
 		{
