@@ -351,9 +351,16 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 								if ((pinfo == NULL && nppath == NULL) ||
 								    (pinfo && nppath && bms_compare(pinfo->ppi_req_outer, nppath->ppi_req_outer) == 0))
 								{
-									// Find an exact param match first.
-									tpath = inipath;
-									break;
+									if (tpath == NULL)
+									{
+										// Find an exact param match first.
+										tpath = inipath;
+									}
+									else if (((bool)ipath->path.pathkeys) == ((bool)inipath->path.pathkeys))
+									{
+										// Override if the sort pathkeys matters...
+										tpath = inipath;
+									}
 								}
 							}
 						}
@@ -417,6 +424,9 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 						tpath->path.startup_cost = ipath->path.startup_cost;
 						tpath->path.total_cost = ipath->path.total_cost;
 						tpath->path.param_info = ipath->path.param_info;
+						// This seems even darker....
+						tpath->path.pathkeys = ipath->path.pathkeys;
+						tpath->path.pathtarget = ipath->path.pathtarget;
 						// Attempt an override.. Just do a memcpy()  and try to fix up the RelOptInfo...
 						memcpy(ipath, tpath, sizeof(IndexPath));
 						ipath->path.parent = ipparent;
