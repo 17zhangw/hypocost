@@ -245,58 +245,48 @@ void hypocost_substitute_bpath(PlannerInfo* root, Path* path, List* oids)
 	Assert(IsA(path, BitmapHeapPath));
 	bpath = (BitmapHeapPath*)path;
 
-	if (IsA(bpath->bitmapqual, BitmapOrPath) || IsA(bpath->bitmapqual, BitmapAndPath))
+	if (IsA(bpath->bitmapqual, BitmapOrPath) || IsA(bpath->bitmapqual, BitmapAndPath) || IsA(bpath->bitmapqual, IndexPath))
 	{
-		// Assume BitmapOr/BitmapAndPaths have same layout.
-		// BitmapHeap ( BitmapOr/BitmapAnd ( BitmapIndex, Bitmap Index ))
-		Path* bbpath = list_nth(((BitmapOrPath*)bpath->bitmapqual)->bitmapquals, 1);
-		if (IsA(bbpath, IndexPath))
+		ListCell* l;
+		RelOptInfo* rel = hypocost_fake_opt(root, (Path*)bpath, 0, oids, true, true);
+		foreach(l, rel->pathlist)
 		{
-			ListCell* l;
-			RelOptInfo* rel = hypocost_fake_opt(root, (Path*)bpath, 0, oids, true, true);
-			foreach(l, rel->pathlist)
+			struct Path* nipath = lfirst(l);
+			ParamPathInfo* nppath = nipath->param_info;
+			if (nipath != NULL && IsA(nipath, BitmapHeapPath) &&
+			    (nppath && pinfo && bms_compare(nppath->ppi_req_outer, pinfo->ppi_req_outer) == 0))
 			{
-				struct Path* nipath = lfirst(l);
-				ParamPathInfo* nppath = nipath->param_info;
-				if (nipath != NULL && IsA(nipath, BitmapHeapPath) &&
-				    (nppath && pinfo && bms_compare(nppath->ppi_req_outer, pinfo->ppi_req_outer) == 0))
-				{
-					// First, prioritize compare equal.
-					BitmapHeapPath* bnipath = (BitmapHeapPath*)nipath;
-					bpath->bitmapqual = bnipath->bitmapqual;
-					return;
-				}
-			}
-
-			foreach(l, rel->pathlist)
-			{
-				struct Path* nipath = lfirst(l);
-				ParamPathInfo* nppath = nipath->param_info;
-				if (nipath != NULL && IsA(nipath, BitmapHeapPath) && nppath && pinfo && bms_is_subset(nppath->ppi_req_outer, pinfo->ppi_req_outer))
-				{
-					// Then, prioritize subset.
-					BitmapHeapPath* bnipath = (BitmapHeapPath*)nipath;
-					bpath->bitmapqual = bnipath->bitmapqual;
-					return;
-				}
-			}
-
-			foreach(l, rel->pathlist)
-			{
-				struct Path* nipath = lfirst(l);
-				ParamPathInfo* nppath = nipath->param_info;
-				if (nipath != NULL && IsA(nipath, BitmapHeapPath) && (nppath == NULL))
-				{
-					BitmapHeapPath* bnipath = (BitmapHeapPath*)nipath;
-					bpath->bitmapqual = bnipath->bitmapqual;
-					return;
-				}
+				// First, prioritize compare equal.
+				BitmapHeapPath* bnipath = (BitmapHeapPath*)nipath;
+				bpath->bitmapqual = bnipath->bitmapqual;
+				return;
 			}
 		}
-	}
-	else if (IsA(bpath->bitmapqual, IndexPath))
-	{
-		hypocost_check_substitute(root, (IndexPath*)bpath->bitmapqual, NULL);
+
+		foreach(l, rel->pathlist)
+		{
+			struct Path* nipath = lfirst(l);
+			ParamPathInfo* nppath = nipath->param_info;
+			if (nipath != NULL && IsA(nipath, BitmapHeapPath) && nppath && pinfo && bms_is_subset(nppath->ppi_req_outer, pinfo->ppi_req_outer))
+			{
+				// Then, prioritize subset.
+				BitmapHeapPath* bnipath = (BitmapHeapPath*)nipath;
+				bpath->bitmapqual = bnipath->bitmapqual;
+				return;
+			}
+		}
+
+		foreach(l, rel->pathlist)
+		{
+			struct Path* nipath = lfirst(l);
+			ParamPathInfo* nppath = nipath->param_info;
+			if (nipath != NULL && IsA(nipath, BitmapHeapPath) && (nppath == NULL))
+			{
+				BitmapHeapPath* bnipath = (BitmapHeapPath*)nipath;
+				bpath->bitmapqual = bnipath->bitmapqual;
+				return;
+			}
+		}
 	}
 }
 
