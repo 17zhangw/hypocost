@@ -620,6 +620,67 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 						cost_functionscan(path, root, path->parent, path->param_info);
 						break;
 				}
+				case T_MergeAppend: {
+						ListCell   *l;
+						Cost	input_startup_cost;
+						Cost	input_total_cost;
+						foreach(l, ((MergeAppendPath*)path)->subpaths)
+						{
+								Path *subpath = (Path *) lfirst(l);
+								recompute_pathcosts(root, subpath, NULL);
+						}
+
+						// This code is unfortunately copy-pasted.
+						path->rows = 0;
+						input_startup_cost = 0;
+						input_total_cost = 0;
+						foreach(l, ((MergeAppendPath*)path)->subpaths)
+						{
+							Path	   *subpath = (Path *) lfirst(l);
+							path->rows += subpath->rows;
+
+							if (pathkeys_contained_in(path->pathkeys, subpath->pathkeys))
+							{
+								/* Subpath is adequately ordered, we won't need to sort it */
+								input_startup_cost += subpath->startup_cost;
+								input_total_cost += subpath->total_cost;
+							}
+							else
+							{
+								/* We'll need to insert a Sort node, so include cost for that */
+								Path		sort_path;	/* dummy for result of cost_sort */
+
+								cost_sort(&sort_path,
+									root,
+									path->pathkeys,
+									subpath->total_cost,
+									subpath->parent->tuples,
+									subpath->pathtarget->width,
+									0.0,
+									work_mem,
+									((MergeAppendPath*)path)->limit_tuples);
+								input_startup_cost += sort_path.startup_cost;
+								input_total_cost += sort_path.total_cost;
+							}
+
+							/* All child paths must have same parameterization */
+							Assert(bms_equal(PATH_REQ_OUTER(subpath), required_outer));
+						}
+
+						if (list_length(((MergeAppendPath*)path)->subpaths) == 1)
+						{
+							path->startup_cost = input_startup_cost;
+							path->total_cost = input_total_cost;
+						}
+						else
+							cost_merge_append(
+								path, root,
+								path->pathkeys, list_length(((MergeAppendPath*)path)->subpaths),
+								input_startup_cost, input_total_cost,
+								path->rows
+							);
+						break;
+				}
 				case T_TidScan:
 						plantype = plantype ? plantype : "TidScan";
 						[[fallthrough]];
@@ -643,9 +704,6 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 						[[fallthrough]];
 				case T_ValuesScan:
 						plantype = plantype ? plantype : "ValuesScan";
-						[[fallthrough]];
-				case T_MergeAppend:
-						plantype = plantype ? plantype : "MergeAppend";
 						[[fallthrough]];
 				case T_ModifyTable:
 						plantype = plantype ? plantype : "ModifyTable";
