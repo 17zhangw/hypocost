@@ -16,7 +16,6 @@
 #include "hypocost.h"
 #include "nodes/print.h"
 
-
 /* Define a struct for the entries */
 typedef struct SubEntry
 {
@@ -334,7 +333,6 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 							IndexPath* inipath = (IndexPath*)nipath;
 							ParamPathInfo* nppath = inipath->path.param_info;
 							IndexOptInfo* iinfo = inipath->indexinfo;
-
 							// Preserve the parameterization if possible...
 							if (iinfo->indexoid == entry->index_oid && ((bool)pinfo) == ((bool)nppath))
 							{
@@ -390,11 +388,12 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 								IndexPath* inipath = (IndexPath*)nipath;
 								ParamPathInfo* nppath = inipath->path.param_info;
 								IndexOptInfo* iinfo = inipath->indexinfo;
+
 								// Of last resort, just try the index itself without outer rel
 								if (iinfo->indexoid == entry->index_oid && !nppath)
 								{
-									tpath = inipath;
-									break;
+									//tpath = inipath;
+									//break;
 								}
 							}
 						}
