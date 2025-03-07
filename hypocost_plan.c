@@ -681,6 +681,25 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 							);
 						break;
 				}
+				case T_WindowAgg: {
+						WindowAggPath *wpath = (WindowAggPath*)path;
+						recompute_pathcosts(root, wpath->subpath, NULL);
+						cost_windowagg(
+							&wpath->path,
+							root,
+							wpath->windowFuncs,
+							list_length(wpath->winclause->partitionClause),
+							list_length(wpath->winclause->orderClause),
+							wpath->subpath->startup_cost,
+							wpath->subpath->total_cost,
+							wpath->subpath->rows
+						);
+
+						/* add tlist eval cost for each output row */
+						path->startup_cost += path->pathtarget->cost.startup;
+						path->total_cost += path->pathtarget->cost.startup + path->pathtarget->cost.per_tuple * path->rows;
+						break;
+				}
 				case T_TidScan:
 						plantype = plantype ? plantype : "TidScan";
 						[[fallthrough]];
@@ -710,9 +729,6 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 						[[fallthrough]];
 				case T_LockRows:
 						plantype = plantype ? plantype : "LockRows";
-						[[fallthrough]];
-				case T_WindowAgg:
-						plantype = plantype ? plantype : "WindowAgg";
 						[[fallthrough]];
 				case T_ProjectSet:
 						plantype = plantype ? plantype : "ProjectSet";
