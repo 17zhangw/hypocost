@@ -113,6 +113,10 @@ hypocost_fake_opt(PlannerInfo* root, Path *path, Oid filter_oid, List* filter_oi
 		rel->reltarget = roi->reltarget;
 		rel->top_parent_relids = roi->top_parent_relids;
 
+		// Copy size-costing information.
+		rel->pages = roi->pages;
+		rel->tuples = roi->tuples;
+
 		{
 			ListCell* l;
 			foreach(l, rel->indexlist)

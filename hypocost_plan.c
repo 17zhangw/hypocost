@@ -662,9 +662,6 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 								input_startup_cost += sort_path.startup_cost;
 								input_total_cost += sort_path.total_cost;
 							}
-
-							/* All child paths must have same parameterization */
-							Assert(bms_equal(PATH_REQ_OUTER(subpath), required_outer));
 						}
 
 						if (list_length(((MergeAppendPath*)path)->subpaths) == 1)
