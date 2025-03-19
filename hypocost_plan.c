@@ -303,7 +303,8 @@ recompute_pathcosts(PlannerInfo* root, Path* path, Path* outer)
 								(MergePath*)path,
 								&workspace,
 								&((MergePath*)path)->extra,
-								materialize_inner
+								materialize_inner,
+								!materialize_inner
 						);
 						break;
 				}
