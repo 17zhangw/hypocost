@@ -382,27 +382,6 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 						}
 					}
 
-					if (!tpath)
-					{
-						foreach(l, rel->pathlist)
-						{
-							struct Path* nipath = lfirst(l);
-							if (nipath != NULL && IsA(nipath, IndexPath))
-							{
-								IndexPath* inipath = (IndexPath*)nipath;
-								ParamPathInfo* nppath = inipath->path.param_info;
-								IndexOptInfo* iinfo = inipath->indexinfo;
-
-								// Of last resort, just try the index itself without outer rel
-								if (iinfo->indexoid == entry->index_oid && !nppath)
-								{
-									//tpath = inipath;
-									//break;
-								}
-							}
-						}
-					}
-
 					if (tpath != NULL)
 					{
 						// Hackery to preserve parallel + costs
@@ -432,14 +411,15 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 						break;
 					}
 
-					if (!overwritten && ipath->path.pathtype == T_IndexOnlyScan && list_length(rel->indexlist) > 0)
-					{
-						// Case where we would no longer generate an IndexOnlyScan.....
-						// Just try to degrade it to an IndexScan...
-						ipath->indexinfo = (IndexOptInfo*)list_nth(rel->indexlist, 0);
-						ipath->path.pathtype = T_IndexScan;
-						break;
-					}
+                                       if (!overwritten && ipath->path.pathtype == T_IndexOnlyScan && list_length(ipath->indexclauses) == 0 && list_length(rel->indexlist) > 0)
+                                       {
+                                               // Case where we would no longer generate an IndexOnlyScan.....
+                                               // Just try to degrade it to an IndexScan...
+                                               ipath->indexinfo = (IndexOptInfo*)list_nth(rel->indexlist, 0);
+                                               ipath->path.pathtype = T_IndexScan;
+                                               break;
+                                       }
+
 				}
 			}
 		}
