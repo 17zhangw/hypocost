@@ -791,7 +791,10 @@ process_subplan(PlannerGlobal* glob, SubPlan* sp)
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
-		recompute_pathcosts(subroot, best_path, NULL);
+		if (!valid_subplan_ids || valid_subplan_ids[sp->plan_id - 1])
+		{
+			recompute_pathcosts(subroot, best_path, NULL);
+		}
 		plan = create_plan(subroot, best_path);
 		return plan;
 }
@@ -832,7 +835,11 @@ process_cte(PlannerGlobal* glob, SubPlan* sp)
 		final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 		best_path = final_rel->cheapest_total_path;
 
-		recompute_pathcosts(subroot, best_path, NULL);
+		if (!valid_subplan_ids || valid_subplan_ids[sp->plan_id - 1])
+		{
+			recompute_pathcosts(subroot, best_path, NULL);
+		}
+
 		foreach (lc, subroot->init_plans)
 		{
 			SubPlan* isp = (SubPlan*)lfirst(lc);

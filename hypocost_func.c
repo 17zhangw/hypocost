@@ -5,6 +5,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/palloc.h"
+#include "optimizer/clauses.h"
 #include "optimizer/plancat.h"
 #include "optimizer/paths.h"
 #include "optimizer/pathnode.h"
@@ -411,7 +412,7 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
 						break;
 					}
 
-                                       if (!overwritten && ipath->path.pathtype == T_IndexOnlyScan && list_length(ipath->indexclauses) == 0 && list_length(rel->indexlist) > 0)
+                                       if (!overwritten && ipath->path.pathtype == T_IndexOnlyScan && list_length(rel->indexlist) > 0)
                                        {
                                                // Case where we would no longer generate an IndexOnlyScan.....
                                                // Just try to degrade it to an IndexScan...
@@ -419,6 +420,33 @@ void hypocost_check_substitute(PlannerInfo* root, IndexPath* ipath, Path* outer)
                                                ipath->path.pathtype = T_IndexScan;
                                                break;
                                        }
+
+				       // if (!overwritten && ipath->path.pathtype == T_IndexOnlyScan && list_length(rel->indexlist) > 0)
+				       // {
+				       //         bool has_subplan = false;
+				       //         ListCell* clause;
+				       //         if (ipparent->joininfo)
+				       //         {
+				       //  	       foreach(clause, ipparent->joininfo)
+				       //  	       {
+				       //  		       RestrictInfo* r = lfirst(clause);
+				       //  		       if (contain_subplans((Node*)r->clause))
+				       //  		       {
+				       //  			       has_subplan = true;
+				       //  			       break;
+				       //  		       }
+				       //  	       }
+				       //         }
+
+				       //         if (has_subplan)
+				       //         {
+				       //  	       // Case where we would no longer generate an IndexOnlyScan.....
+				       //  	       // Just try to degrade it to an IndexScan...
+				       //  	       ipath->indexinfo = (IndexOptInfo*)list_nth(rel->indexlist, 0);
+				       //  	       ipath->path.pathtype = T_IndexScan;
+				       //  	       break;
+				       //         }
+				       // }
 
 				}
 			}
