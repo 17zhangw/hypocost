@@ -117,6 +117,7 @@ hypocost_fake_opt(PlannerInfo* root, Path *path, Oid filter_oid, List* filter_oi
 		// Copy size-costing information.
 		rel->pages = roi->pages;
 		rel->tuples = roi->tuples;
+		set_baserel_size_estimates(root, rel);
 
 		{
 			ListCell* l;
